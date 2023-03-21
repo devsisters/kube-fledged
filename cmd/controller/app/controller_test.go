@@ -18,6 +18,8 @@ package app
 
 import (
 	"fmt"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -876,6 +878,154 @@ func TestSyncHandler(t *testing.T) {
 			}
 		} else if err != nil {
 			t.Errorf("Test: %s failed. expectedError=nil, actualError=%s", test.name, err.Error())
+		}
+	}
+	t.Logf("%d tests passed", len(tests))
+}
+
+func TestGetNodesForCacheSpecImages(t *testing.T) {
+	defaultNodeList := &corev1.NodeList{
+		Items: []corev1.Node{
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "node1",
+					Labels: map[string]string{"kubernetes.io/hostname": "node1"},
+				},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "node2",
+					Labels: map[string]string{"kubernetes.io/hostname": "node2"},
+				},
+				Spec: corev1.NodeSpec{
+					Taints: []corev1.Taint{
+						{Key: "key1", Value: "value1", Effect: corev1.TaintEffectNoSchedule},
+					},
+				},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "node3",
+					Labels: map[string]string{"kubernetes.io/hostname": "node3", "label1": "foo"},
+				},
+			},
+			{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "node4",
+					Labels: map[string]string{"kubernetes.io/hostname": "node4", "label1": "foo"},
+				},
+				Spec: corev1.NodeSpec{
+					Taints: []corev1.Taint{
+						{Key: "key2", Value: "value2", Effect: corev1.TaintEffectNoSchedule},
+					},
+				},
+			},
+			{
+				// node with PreferNoSchedule
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "node5",
+					Labels: map[string]string{"kubernetes.io/hostname": "node5", "label1": "foo"},
+				},
+				Spec: corev1.NodeSpec{
+					Taints: []corev1.Taint{
+						{Key: "key1", Value: "value1", Effect: corev1.TaintEffectPreferNoSchedule},
+					},
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name              string
+		cacheSpecImages   kubefledgedv1alpha2.CacheSpecImages
+		nodeList          *corev1.NodeList
+		expectedNodeNames []string
+		expectErr         bool
+		expectedErrString string
+	}{
+		{
+			name: "#1: No nodeSelector, no tolerations",
+			cacheSpecImages: kubefledgedv1alpha2.CacheSpecImages{
+				Images: []string{"foo"},
+			},
+			nodeList:          defaultNodeList,
+			expectedNodeNames: []string{"node1", "node3", "node5"},
+			expectErr:         false,
+		},
+		{
+			name: "#2: No nodeSelector, universal tolerations",
+			cacheSpecImages: kubefledgedv1alpha2.CacheSpecImages{
+				Images:      []string{"foo"},
+				Tolerations: []corev1.Toleration{{Operator: corev1.TolerationOpExists}},
+			},
+			nodeList:          defaultNodeList,
+			expectedNodeNames: []string{"node1", "node2", "node3", "node4", "node5"},
+			expectErr:         false,
+		},
+		{
+			name: "#3: nodeSelector for node 3, 4 and 5, no tolerations",
+			cacheSpecImages: kubefledgedv1alpha2.CacheSpecImages{
+				Images:       []string{"foo"},
+				NodeSelector: map[string]string{"label1": "foo"},
+			},
+			nodeList:          defaultNodeList,
+			expectedNodeNames: []string{"node3", "node5"},
+			expectErr:         false,
+		},
+		{
+			name: "#4: nodeSelector for node 3, 4 and 5, toleration for node 2",
+			cacheSpecImages: kubefledgedv1alpha2.CacheSpecImages{
+				Images:       []string{"foo"},
+				NodeSelector: map[string]string{"label1": "foo"},
+				Tolerations:  []corev1.Toleration{{Key: "key1", Value: "value1", Effect: corev1.TaintEffectNoSchedule, Operator: corev1.TolerationOpEqual}},
+			},
+			nodeList:          defaultNodeList,
+			expectedNodeNames: []string{"node3", "node5"},
+			expectErr:         false,
+		},
+		{
+			name: "#5: nodeSelector for node 3, 4 and 5, toleration for node 4",
+			cacheSpecImages: kubefledgedv1alpha2.CacheSpecImages{
+				Images:       []string{"foo"},
+				NodeSelector: map[string]string{"label1": "foo"},
+				Tolerations:  []corev1.Toleration{{Key: "key2", Effect: corev1.TaintEffectNoSchedule, Operator: corev1.TolerationOpExists}},
+			},
+			nodeList:          defaultNodeList,
+			expectedNodeNames: []string{"node3", "node4", "node5"},
+			expectErr:         false,
+		},
+	}
+
+	for _, test := range tests {
+		fakekubeclientset := &fakeclientset.Clientset{}
+		fakefledgedclientset := &kubefledgedclientsetfake.Clientset{}
+
+		controller, nodeInformer, _ := newTestController(fakekubeclientset, fakefledgedclientset)
+		if test.nodeList != nil && len(test.nodeList.Items) > 0 {
+			for _, node := range test.nodeList.Items {
+				nodeCopy := node
+				nodeInformer.Informer().GetIndexer().Add(&nodeCopy)
+			}
+		}
+		nodes, err := controller.getNodesForCacheSpecImages(&test.cacheSpecImages)
+		if test.expectErr {
+			if err == nil {
+				t.Errorf("Test: %s failed: expectedError=%s, actualError=nil", test.name, test.expectedErrString)
+			}
+			if err != nil && !strings.HasPrefix(err.Error(), test.expectedErrString) {
+				t.Errorf("Test: %s failed: expectedError=%s, actualError=%s", test.name, test.expectedErrString, err.Error())
+			}
+		} else if err != nil {
+			t.Errorf("Test: %s failed. expectedError=nil, actualError=%s", test.name, err.Error())
+		}
+		actualNodeNames := make([]string, 0, len(nodes))
+		for _, node := range nodes {
+			actualNodeNames = append(actualNodeNames, node.Name)
+		}
+		sort.Strings(actualNodeNames)
+		sort.Strings(test.expectedNodeNames)
+		if !reflect.DeepEqual(test.expectedNodeNames, actualNodeNames) {
+			t.Errorf("Test: %s failed: expectedNodeList=%v, actualNodeList=%v", test.name, test.expectedNodeNames, actualNodeNames)
 		}
 	}
 	t.Logf("%d tests passed", len(tests))
