@@ -19,6 +19,7 @@ package app
 import (
 	"context"
 	"fmt"
+	scheduling "k8s.io/component-helpers/scheduling/corev1"
 	"reflect"
 	"time"
 
@@ -510,17 +511,10 @@ func (c *Controller) syncHandler(wqKey images.WorkQueueKey) error {
 		}
 
 		for k, i := range cacheSpec {
-			if len(i.NodeSelector) > 0 {
-				if nodes, err = c.nodesLister.List(labels.Set(i.NodeSelector).AsSelector()); err != nil {
-					glog.Errorf("Error listing nodes using nodeselector %+v: %v", i.NodeSelector, err)
-					return err
-				}
-			} else {
-				if nodes, err = c.nodesLister.List(labels.Everything()); err != nil {
-					glog.Errorf("Error listing nodes using nodeselector labels.Everything(): %v", err)
-					return err
-				}
+			if nodes, err = c.getNodesForCacheSpecImages(&i); err != nil {
+				return err
 			}
+
 			glog.V(4).Infof("No. of nodes in %+v is %d", i.NodeSelector, len(nodes))
 
 			for _, n := range nodes {
@@ -649,6 +643,35 @@ func (c *Controller) syncHandler(wqKey images.WorkQueueKey) error {
 	glog.Infof("Completed sync actions for image cache %s(%s)", name, wqKey.WorkType)
 	return nil
 
+}
+
+func (c *Controller) getNodesForCacheSpecImages(cacheSpecImages *v1alpha2.CacheSpecImages) ([]*corev1.Node, error) {
+	var err error
+	var nodesBeforeMatchTolerations []*corev1.Node
+	var nodes []*corev1.Node
+
+	if len(cacheSpecImages.NodeSelector) > 0 {
+		if nodesBeforeMatchTolerations, err = c.nodesLister.List(labels.Set(cacheSpecImages.NodeSelector).AsSelector()); err != nil {
+			glog.Errorf("Error listing nodes using nodeSelector %+v: %v", cacheSpecImages.NodeSelector, err)
+			return nil, err
+		}
+	} else {
+		if nodesBeforeMatchTolerations, err = c.nodesLister.List(labels.Everything()); err != nil {
+			glog.Errorf("Error listing nodes using nodeSelector labels.Everything(): %v", err)
+			return nil, err
+		}
+	}
+	for _, node := range nodesBeforeMatchTolerations {
+		if _, found := scheduling.FindMatchingUntoleratedTaint(
+			node.Spec.Taints,
+			cacheSpecImages.Tolerations,
+			func(taint *corev1.Taint) bool {
+				return taint.Effect == corev1.TaintEffectNoSchedule || taint.Effect == corev1.TaintEffectNoExecute
+			}); !found {
+			nodes = append(nodes, node)
+		}
+	}
+	return nodes, nil
 }
 
 func (c *Controller) updateImageCacheStatus(imageCache *v1alpha2.ImageCache, status *v1alpha2.ImageCacheStatus) error {

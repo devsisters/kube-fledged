@@ -11,6 +11,7 @@ require (
 	k8s.io/apimachinery v0.25.3
 	k8s.io/apiserver v0.25.3
 	k8s.io/client-go v0.25.3
+	k8s.io/component-helpers v0.25.3
 	sigs.k8s.io/e2e-framework v0.0.7
 )
 
