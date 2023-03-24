@@ -14,7 +14,7 @@ on:
       crictl_image_repo:
         description: 'kubefledged-cri-client repository'
         required: true
-        type: string        
+        type: string
       crictl_version:
         description: 'crictl tool version'
         required: true
@@ -34,11 +34,11 @@ on:
       dockerfile_operator:
         description: 'kubefledged-operator dockerfile path'
         required: true
-        type: string                
+        type: string
       dockerfile_webhook_server:
         description: 'kubefledged-webhook-server dockerfile path'
         required: true
-        type: string                                
+        type: string
       golang_version:
         description: 'Go version used during the build'
         required: true
@@ -50,7 +50,7 @@ on:
       operator_target_platforms:
         description: 'target platforms for operator multi-arch image'
         required: true
-        type: string        
+        type: string
       operatorsdk_version:
         description: 'operator sdk release version'
         required: true
@@ -58,7 +58,7 @@ on:
       push_image:
         description: 'whether or not to push built images to dockerhub'
         required: true
-        type: boolean           
+        type: boolean
       release_version:
         description: 'kube-fledged release version'
         required: true
@@ -66,7 +66,7 @@ on:
       target_platforms:
         description: 'target platforms for multi-arch images'
         required: true
-        type: string        
+        type: string
       webhook_server_image_repo:
         description: 'kubefledged-webhook-server repository'
         required: true
@@ -77,7 +77,7 @@ on:
         required: false
       dockerhub_pswd:
         description: 'Dockerhub password'
-        required: false        
+        required: false
 
 jobs:
   build_kube_fledged:
@@ -105,23 +105,33 @@ jobs:
 
     - name: Run unit tests
       run: hack/run-unit-tests.sh
-    
+
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v1
-      
+
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v1
-    
+
     - name: Login to DockerHub
       env:
         DOCKERHUB_USER: ${{ secrets.dockerhub_user }}
         DOCKERHUB_PSWD: ${{ secrets.dockerhub_pswd }}
       if: "${{ env.DOCKERHUB_USER != '' && env.DOCKERHUB_PSWD != '' }}"
-      uses: docker/login-action@v1 
+      uses: docker/login-action@v1
       with:
         username: ${{ secrets.dockerhub_user }}
         password: ${{ secrets.dockerhub_pswd }}
-    
+
+    - name: Login to ECR
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      if: "${{ env.AWS_ACCESS_KEY_ID != '' && env.AWS_SECRET_ACCESS_KEY != '' }}"
+      run: |
+        docker run --rm -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY amazon/aws-cli \
+          ecr get-login-password --region ap-northeast-1 \
+          | docker login --username AWS --password-stdin 425927401566.dkr.ecr.ap-northeast-1.amazonaws.com
+
     - name: Build kubefledged-controller image
       uses: docker/build-push-action@v2
       with:
